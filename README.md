@@ -38,7 +38,7 @@ The PhotoDNA-like hash is represented internally as a flat vector of 144 values.
 Print the top-level help:
 
 ```bash
-python oaphotodna_faiss.py --help
+python oaphotodna.py --help
 ```
 
 This shows the available commands:
@@ -68,13 +68,13 @@ Output:
 Default metric is Euclidean:
 
 ```bash
-python oaphotodna_faiss.py compare image1.jpg image2.jpg
+python oaphotodna.py compare image1.jpg image2.jpg
 ```
 
 Use Manhattan distance instead:
 
 ```bash
-python oaphotodna_faiss.py compare --metric manhattan image1.jpg image2.jpg
+python oaphotodna.py compare --metric manhattan image1.jpg image2.jpg
 ```
 
 Example output:
@@ -144,7 +144,7 @@ Indexed 3 file(s) into index.faiss
 Append more images later:
 
 ```bash
-python oaphotodna_faiss.py faiss-add index.faiss meta.json img4.jpg img5.jpg
+python oaphotodna.py faiss-add index.faiss meta.json img4.jpg img5.jpg
 ```
 
 Expected output:
@@ -158,13 +158,13 @@ Added 2 file(s) into index.faiss
 Search for the closest matches to a query image:
 
 ```bash
-python oaphotodna_faiss.py faiss-query index.faiss meta.json query.jpg
+python oaphotodna.py faiss-query index.faiss meta.json query.jpg
 ```
 
 Specify the number of results to return:
 
 ```bash
-python oaphotodna_faiss.py faiss-query index.faiss meta.json query.jpg 20
+python oaphotodna.py faiss-query index.faiss meta.json query.jpg 20
 ```
 
 Example output:
@@ -191,7 +191,7 @@ Results: 3
 Only return matches at or above a similarity threshold:
 
 ```bash
-python oaphotodna_faiss.py faiss-query index.faiss meta.json query.jpg 20 --min-similarity 0.95
+python oaphotodna.py faiss-query index.faiss meta.json query.jpg 20 --min-similarity 0.95
 ```
 
 ### Filter query results by Euclidean distance
@@ -199,13 +199,13 @@ python oaphotodna_faiss.py faiss-query index.faiss meta.json query.jpg 20 --min-
 Only return matches at or below a maximum Euclidean distance:
 
 ```bash
-python oaphotodna_faiss.py faiss-query index.faiss meta.json query.jpg 20 --max-distance 12
+python oaphotodna.py faiss-query index.faiss meta.json query.jpg 20 --max-distance 12
 ```
 
 ### Combine both filters
 
 ```bash
-python oaphotodna_faiss.py faiss-query index.faiss meta.json query.jpg 20 --min-similarity 0.98 --max-distance 8
+python oaphotodna.py faiss-query index.faiss meta.json query.jpg 20 --min-similarity 0.98 --max-distance 8
 ```
 
 ## FAISS distance notes
@@ -264,19 +264,19 @@ The script validates common input issues and prints clearer messages for cases s
 Create the index once:
 
 ```bash
-python oaphotodna_faiss.py faiss-build index.faiss meta.json dataset/*.jpg
+python oaphotodna.py faiss-build index.faiss meta.json dataset/*.jpg
 ```
 
 Add more images over time:
 
 ```bash
-python oaphotodna_faiss.py faiss-add index.faiss meta.json new_images/*.jpg
+python oaphotodna.py faiss-add index.faiss meta.json new_images/*.jpg
 ```
 
 Run lookups:
 
 ```bash
-python oaphotodna_faiss.py faiss-query index.faiss meta.json suspect.jpg 25 --min-similarity 0.97
+python oaphotodna.py faiss-query index.faiss meta.json suspect.jpg 25 --min-similarity 0.97
 ```
 
 ## Limitations
