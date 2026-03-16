@@ -553,6 +553,10 @@ def canonicalize_path(path: str) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(path)))
 
 
+def hash_key(hash_values: List[int]) -> Tuple[int, ...]:
+    return tuple(int(v) for v in hash_values)
+
+
 def build_records_for_files(files: List[str], meta: Dict) -> Tuple[List[int], List[List[int]], List[Dict]]:
     ids = []
     hashes = []
@@ -560,7 +564,13 @@ def build_records_for_files(files: List[str], meta: Dict) -> Tuple[List[int], Li
     next_id = meta['next_id']
 
     existing_paths = {canonicalize_path(item['path']) for item in meta['items']}
+    existing_hashes = {
+        hash_key(item['hash'])
+        for item in meta['items']
+        if isinstance(item.get('hash'), list)
+    }
     seen_input_paths = set()
+    seen_input_hashes = set()
 
     for path in files:
         normalized_path = canonicalize_path(path)
@@ -568,6 +578,10 @@ def build_records_for_files(files: List[str], meta: Dict) -> Tuple[List[int], Li
             continue
 
         h = compute_hash(path)
+        h_key = hash_key(h)
+        if h_key in existing_hashes or h_key in seen_input_hashes:
+            continue
+
         item_id = next_id
         next_id += 1
         ids.append(item_id)
@@ -580,6 +594,8 @@ def build_records_for_files(files: List[str], meta: Dict) -> Tuple[List[int], Li
         })
         seen_input_paths.add(normalized_path)
         existing_paths.add(normalized_path)
+        seen_input_hashes.add(h_key)
+        existing_hashes.add(h_key)
 
     meta['next_id'] = next_id
     return ids, hashes, items

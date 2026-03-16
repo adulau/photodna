@@ -222,15 +222,15 @@ This makes FAISS query results easier to interpret and comparable with direct pa
 
 ## Duplicate handling
 
-When using `faiss-build` or `faiss-add`, the script avoids adding the same file path more than once.
+When using `faiss-build` or `faiss-add`, the script avoids adding duplicates in two ways:
 
-To do that, it canonicalizes each path before insertion using normalized, absolute, real paths. This helps prevent duplicates caused by path variations such as:
+1. **Path deduplication**: it canonicalizes each path before insertion using normalized, absolute, real paths, preventing duplicates caused by path variations such as:
+   - `./image.jpg`
+   - `/full/path/to/image.jpg`
+   - symlink-resolved variants of the same file
+2. **Content deduplication**: it also skips files whose computed hash is already present in the metadata (including duplicates within the same input batch).
 
-- `./image.jpg`
-- `/full/path/to/image.jpg`
-- symlink-resolved variants of the same file
-
-Duplicate checking is based on the canonicalized **path**, not on hash equality. That means two different files with identical hashes can still both be indexed.
+This prevents indexing the same image content multiple times even when it appears at different file paths.
 
 ## Compatibility shortcuts
 
@@ -283,14 +283,13 @@ python oaphotodna_faiss.py faiss-query index.faiss meta.json suspect.jpg 25 --mi
 
 - The FAISS index currently uses exact L2 search (`IndexFlatL2` wrapped with ID mapping).
 - `meta.json` is a simple JSON sidecar, not a transactional database.
-- Duplicate prevention is path-based, not content-based.
+- Duplicate prevention uses both canonicalized paths and hash-value content checks.
 - Very large collections may eventually benefit from approximate indexes such as IVF or HNSW.
 
 ## Suggested future improvements
 
 Possible next steps for the script:
 
-- support duplicate detection by hash value
 - support recursive directory indexing
 - switch metadata storage from JSON to SQLite
 - add batch query mode
