@@ -549,16 +549,24 @@ def save_faiss_index(index_path: str, index):
     faiss.write_index(index, index_path)
 
 
+def canonicalize_path(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
 def build_records_for_files(files: List[str], meta: Dict) -> Tuple[List[int], List[List[int]], List[Dict]]:
     ids = []
     hashes = []
     items = []
     next_id = meta['next_id']
 
-    existing_paths = {item['path'] for item in meta['items']}
+    existing_paths = {canonicalize_path(item['path']) for item in meta['items']}
+    seen_input_paths = set()
+
     for path in files:
-        if path in existing_paths:
+        normalized_path = canonicalize_path(path)
+        if normalized_path in existing_paths or normalized_path in seen_input_paths:
             continue
+
         h = compute_hash(path)
         item_id = next_id
         next_id += 1
@@ -566,10 +574,12 @@ def build_records_for_files(files: List[str], meta: Dict) -> Tuple[List[int], Li
         hashes.append(h)
         items.append({
             'id': item_id,
-            'path': path,
+            'path': normalized_path,
             'hash': h,
             'extra': {}
         })
+        seen_input_paths.add(normalized_path)
+        existing_paths.add(normalized_path)
 
     meta['next_id'] = next_id
     return ids, hashes, items
