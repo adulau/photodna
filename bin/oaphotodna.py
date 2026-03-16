@@ -740,104 +740,160 @@ def imgnet_test():
 
 # ----- CLI -----
 
-def print_usage(argv0: str):
-    print('Usage:')
-    print(f"  {argv0} image.jpg")
-    print(f"  {argv0} image1.jpg image2.jpg")
-    print(f"  {argv0} --metric euclidean image1.jpg image2.jpg")
-    print(f"  {argv0} --metric manhattan image1.jpg image2.jpg")
-    print(f"  {argv0} --faiss-build index.faiss meta.json image1.jpg [image2.jpg ...]")
-    print(f"  {argv0} --faiss-add index.faiss meta.json image1.jpg [image2.jpg ...]")
-    print(f"  {argv0} --faiss-query index.faiss meta.json query.jpg [top_k]")
-    print(f"  {argv0} --faiss-query index.faiss meta.json query.jpg [top_k] --min-similarity 0.95")
-    print(f"  {argv0} --faiss-query index.faiss meta.json query.jpg [top_k] --max-distance 15")
+import argparse
 
 
-def parse_faiss_query_args(args: List[str]):
-    if len(args) < 4:
-        raise ValueError('Not enough arguments for --faiss-query')
+class FriendlyArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: {message}\n")
 
-    index_path = args[1]
-    meta_path = args[2]
-    query_file = args[3]
 
-    top_k = 10
-    min_similarity = None
-    max_distance = None
+def existing_file(path: str) -> str:
+    if path.startswith('-'):
+        raise argparse.ArgumentTypeError(f"expected a file path, got option-like value: {path}")
+    if not os.path.exists(path):
+        raise argparse.ArgumentTypeError(f"file not found: {path}")
+    if not os.path.isfile(path):
+        raise argparse.ArgumentTypeError(f"not a regular file: {path}")
+    return path
 
-    i = 4
-    if i < len(args) and not args[i].startswith('--'):
-        top_k = int(args[i])
-        i += 1
 
-    while i < len(args):
-        flag = args[i]
-        if flag == '--min-similarity':
-            i += 1
-            if i >= len(args):
-                raise ValueError('--min-similarity requires a value')
-            min_similarity = float(args[i])
-        elif flag == '--max-distance':
-            i += 1
-            if i >= len(args):
-                raise ValueError('--max-distance requires a value')
-            max_distance = float(args[i])
-        else:
-            raise ValueError(f'Unknown option: {flag}')
-        i += 1
+def non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid integer value: {value}") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError('value must be >= 1')
+    return parsed
 
-    return index_path, meta_path, query_file, top_k, min_similarity, max_distance
+
+def similarity_value(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid similarity value: {value}") from exc
+    if not 0.0 <= parsed <= 1.0:
+        raise argparse.ArgumentTypeError('similarity must be between 0 and 1')
+    return parsed
+
+
+def non_negative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid numeric value: {value}") from exc
+    if parsed < 0.0:
+        raise argparse.ArgumentTypeError('value must be >= 0')
+    return parsed
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = FriendlyArgumentParser(
+        description='Compute and compare PhotoDNA-like hashes, with optional FAISS local indexing.'
+    )
+
+    subparsers = parser.add_subparsers(dest='command')
+
+    hash_parser = subparsers.add_parser('hash', help='Compute the hash of one image')
+    hash_parser.add_argument('image', type=existing_file, help='Path to the image file')
+
+    compare_parser = subparsers.add_parser('compare', help='Compare two images')
+    compare_parser.add_argument('--metric', choices=['euclidean', 'manhattan'], default='euclidean')
+    compare_parser.add_argument('image1', type=existing_file)
+    compare_parser.add_argument('image2', type=existing_file)
+
+    faiss_build_parser = subparsers.add_parser('faiss-build', help='Create a new FAISS index from images')
+    faiss_build_parser.add_argument('index_path', help='Output FAISS index path')
+    faiss_build_parser.add_argument('meta_path', help='Output metadata JSON path')
+    faiss_build_parser.add_argument('images', nargs='+', type=existing_file, help='Images to index')
+
+    faiss_add_parser = subparsers.add_parser('faiss-add', help='Append images to an existing FAISS index')
+    faiss_add_parser.add_argument('index_path', help='FAISS index path')
+    faiss_add_parser.add_argument('meta_path', help='Metadata JSON path')
+    faiss_add_parser.add_argument('images', nargs='+', type=existing_file, help='Images to index')
+
+    faiss_query_parser = subparsers.add_parser('faiss-query', help='Find the closest indexed matches for one image')
+    faiss_query_parser.add_argument('index_path', help='FAISS index path')
+    faiss_query_parser.add_argument('meta_path', help='Metadata JSON path')
+    faiss_query_parser.add_argument('query_image', type=existing_file, help='Query image')
+    faiss_query_parser.add_argument('top_k', nargs='?', type=non_negative_int, default=10, help='Number of results to return')
+    faiss_query_parser.add_argument('--min-similarity', type=similarity_value, default=None, help='Filter results below this similarity threshold [0,1]')
+    faiss_query_parser.add_argument('--max-distance', type=non_negative_float, default=None, help='Filter results above this Euclidean distance')
+
+    parser.epilog = (
+        'Compatibility shortcuts are still supported: '        'script.py image.jpg | script.py image1.jpg image2.jpg | '        'script.py --metric euclidean image1.jpg image2.jpg | '        'script.py --faiss-build index.faiss meta.json image1.jpg [image2.jpg ...] | '        'script.py --faiss-add index.faiss meta.json image1.jpg [image2.jpg ...] | '        'script.py --faiss-query index.faiss meta.json query.jpg [top_k] [--min-similarity X] [--max-distance Y]'
+    )
+    return parser
+
+
+def normalize_legacy_argv(argv: List[str]) -> List[str]:
+    args = argv[1:]
+    if not args:
+        return ['--help']
+    if args[0] in ('-h', '--help'):
+        return ['--help']
+    if args[0] == '--metric':
+        return ['compare'] + args
+    if args[0] == '--faiss-build':
+        return ['faiss-build'] + args[1:]
+    if args[0] == '--faiss-add':
+        return ['faiss-add'] + args[1:]
+    if args[0] == '--faiss-query':
+        return ['faiss-query'] + args[1:]
+    if len(args) == 1:
+        return ['hash'] + args
+    if len(args) == 2:
+        return ['compare'] + args
+    return args
 
 
 def main(argv: List[str]):
-    if len(argv) == 2:
-        photo_hash = compute_hash(argv[1])
-        hash_string = ','.join(str(i) for i in photo_hash)
-        print(hash_string)
+    parser = build_parser()
+    normalized_args = normalize_legacy_argv(argv)
+
+    try:
+        args = parser.parse_args(normalized_args)
+
+        if args.command == 'hash':
+            photo_hash = compute_hash(args.image)
+            print(','.join(str(i) for i in photo_hash))
+            return 0
+
+        if args.command == 'compare':
+            result = compare_images(args.image1, args.image2, metric=args.metric)
+            print(f"Distance ({result['metric']}): {result['distance']:.4f}")
+            print(f"Similarity: {result['similarity']:.6f}")
+            return 0
+
+        if args.command == 'faiss-build':
+            added = build_faiss_index(args.index_path, args.meta_path, args.images)
+            print(f"Indexed {added} file(s) into {args.index_path}")
+            return 0
+
+        if args.command == 'faiss-add':
+            added = add_files_to_faiss(args.index_path, args.meta_path, args.images)
+            print(f"Added {added} file(s) into {args.index_path}")
+            return 0
+
+        if args.command == 'faiss-query':
+            result = query_faiss_index(
+                index_path=args.index_path,
+                meta_path=args.meta_path,
+                query_file=args.query_image,
+                top_k=args.top_k,
+                min_similarity=args.min_similarity,
+                max_distance=args.max_distance,
+            )
+            print_faiss_results(result)
+            return 0
+
+        parser.print_help()
         return 0
-
-    if len(argv) == 3:
-        result = compare_images(argv[1], argv[2])
-        print(f"Distance ({result['metric']}): {result['distance']:.4f}")
-        print(f"Similarity: {result['similarity']:.6f}")
-        return 0
-
-    if len(argv) == 4 and argv[1] == '--metric':
-        print(f"Usage: {argv[0]} [--metric euclidean|manhattan] image1 image2")
-        return -1
-
-    if len(argv) == 5 and argv[1] == '--metric':
-        metric = argv[2]
-        result = compare_images(argv[3], argv[4], metric=metric)
-        print(f"Distance ({result['metric']}): {result['distance']:.4f}")
-        print(f"Similarity: {result['similarity']:.6f}")
-        return 0
-
-    if len(argv) >= 5 and argv[1] == '--faiss-build':
-        added = build_faiss_index(argv[2], argv[3], argv[4:])
-        print(f"Indexed {added} file(s) into {argv[2]}")
-        return 0
-
-    if len(argv) >= 5 and argv[1] == '--faiss-add':
-        added = add_files_to_faiss(argv[2], argv[3], argv[4:])
-        print(f"Added {added} file(s) into {argv[2]}")
-        return 0
-
-    if len(argv) >= 5 and argv[1] == '--faiss-query':
-        index_path, meta_path, query_file, top_k, min_similarity, max_distance = parse_faiss_query_args(argv[1:])
-        result = query_faiss_index(
-            index_path=index_path,
-            meta_path=meta_path,
-            query_file=query_file,
-            top_k=top_k,
-            min_similarity=min_similarity,
-            max_distance=max_distance,
-        )
-        print_faiss_results(result)
-        return 0
-
-    print_usage(argv[0])
-    return -1
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f'Error: {exc}', file=sys.stderr)
+        return 1
 
 
 if __name__ == '__main__':
