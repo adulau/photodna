@@ -38,23 +38,17 @@ The PhotoDNA-like hash is represented internally as a flat vector of 144 values.
 Print the top-level help:
 
 ```bash
-python oaphotodna.py --help
+python bin/oaphotodna.py --help
 ```
 
-This shows the available commands:
-
-- `hash`
-- `compare`
-- `faiss-build`
-- `faiss-add`
-- `faiss-query`
+The CLI uses traditional, flag-prefixed arguments (for example `--hash`, `--compare`, `--faiss-query`) rather than positional subcommands.
 
 ## Basic usage
 
 ### 1) Hash a single image
 
 ```bash
-python oaphotodna_faiss.py hash image.jpg
+python bin/oaphotodna.py --hash image.jpg
 ```
 
 Output:
@@ -68,13 +62,13 @@ Output:
 Default metric is Euclidean:
 
 ```bash
-python oaphotodna.py compare image1.jpg image2.jpg
+python bin/oaphotodna.py --compare image1.jpg image2.jpg
 ```
 
 Use Manhattan distance instead:
 
 ```bash
-python oaphotodna.py compare --metric manhattan image1.jpg image2.jpg
+python bin/oaphotodna.py --compare image1.jpg image2.jpg --metric manhattan
 ```
 
 Example output:
@@ -98,7 +92,7 @@ For Euclidean distance, similarity is derived from the maximum possible distance
 similarity = 1 - (euclidean_distance / max_possible_distance)
 ```
 
-The FAISS query path uses the same normalization so that the `similarity` reported by `faiss-query` is directly comparable to the `Similarity:` line from `compare`.
+The FAISS query path uses the same normalization so that the `similarity` reported by `--faiss-query` is directly comparable to the `Similarity:` line from `--compare`.
 
 ## FAISS local database
 
@@ -130,7 +124,7 @@ Each item in `items` contains:
 Create a new index from a set of images:
 
 ```bash
-python oaphotodna_faiss.py faiss-build index.faiss meta.json img1.jpg img2.jpg img3.jpg
+python bin/oaphotodna.py --faiss-build index.faiss meta.json img1.jpg img2.jpg img3.jpg
 ```
 
 Expected output:
@@ -144,7 +138,7 @@ Indexed 3 file(s) into index.faiss
 Append more images later:
 
 ```bash
-python oaphotodna.py faiss-add index.faiss meta.json img4.jpg img5.jpg
+python bin/oaphotodna.py --faiss-add index.faiss meta.json img4.jpg img5.jpg
 ```
 
 Expected output:
@@ -158,13 +152,13 @@ Added 2 file(s) into index.faiss
 Search for the closest matches to a query image:
 
 ```bash
-python oaphotodna.py faiss-query index.faiss meta.json query.jpg
+python bin/oaphotodna.py --faiss-query index.faiss meta.json query.jpg
 ```
 
 Specify the number of results to return:
 
 ```bash
-python oaphotodna.py faiss-query index.faiss meta.json query.jpg 20
+python bin/oaphotodna.py --faiss-query index.faiss meta.json query.jpg 20
 ```
 
 Example output:
@@ -191,7 +185,7 @@ Results: 3
 Only return matches at or above a similarity threshold:
 
 ```bash
-python oaphotodna.py faiss-query index.faiss meta.json query.jpg 20 --min-similarity 0.95
+python bin/oaphotodna.py --faiss-query index.faiss meta.json query.jpg 20 --min-similarity 0.95
 ```
 
 ### Filter query results by Euclidean distance
@@ -199,13 +193,13 @@ python oaphotodna.py faiss-query index.faiss meta.json query.jpg 20 --min-simila
 Only return matches at or below a maximum Euclidean distance:
 
 ```bash
-python oaphotodna.py faiss-query index.faiss meta.json query.jpg 20 --max-distance 12
+python bin/oaphotodna.py --faiss-query index.faiss meta.json query.jpg 20 --max-distance 12
 ```
 
 ### Combine both filters
 
 ```bash
-python oaphotodna.py faiss-query index.faiss meta.json query.jpg 20 --min-similarity 0.98 --max-distance 8
+python bin/oaphotodna.py --faiss-query index.faiss meta.json query.jpg 20 --min-similarity 0.98 --max-distance 8
 ```
 
 ## FAISS distance notes
@@ -217,81 +211,3 @@ The script converts that into:
 - `distance_squared` — raw FAISS value
 - `distance` — Euclidean distance (`sqrt(distance_squared)`)
 - `similarity` — normalized `0..1` score derived from Euclidean distance
-
-This makes FAISS query results easier to interpret and comparable with direct pairwise comparisons.
-
-## Duplicate handling
-
-When using `faiss-build` or `faiss-add`, the script avoids adding duplicates in two ways:
-
-1. **Path deduplication**: it canonicalizes each path before insertion using normalized, absolute, real paths, preventing duplicates caused by path variations such as:
-   - `./image.jpg`
-   - `/full/path/to/image.jpg`
-   - symlink-resolved variants of the same file
-2. **Content deduplication**: it also skips files whose computed hash is already present in the metadata (including duplicates within the same input batch).
-
-This prevents indexing the same image content multiple times even when it appears at different file paths.
-
-## Compatibility shortcuts
-
-The script still accepts the older shortcut forms:
-
-```bash
-python oaphotodna_faiss.py image.jpg
-python oaphotodna_faiss.py image1.jpg image2.jpg
-python oaphotodna_faiss.py --metric euclidean image1.jpg image2.jpg
-python oaphotodna_faiss.py --faiss-build index.faiss meta.json image1.jpg image2.jpg
-python oaphotodna_faiss.py --faiss-add index.faiss meta.json image1.jpg image2.jpg
-python oaphotodna_faiss.py --faiss-query index.faiss meta.json query.jpg 10 --min-similarity 0.95
-```
-
-These are translated internally to the subcommand-based CLI.
-
-## Error handling
-
-The script validates common input issues and prints clearer messages for cases such as:
-
-- missing files
-- option-like values passed where a file path is expected
-- invalid `top_k` values
-- invalid similarity values outside `0..1`
-- invalid negative distance thresholds
-- missing FAISS dependency when FAISS commands are used
-- metadata dimension mismatch
-
-## Typical workflow
-
-Create the index once:
-
-```bash
-python oaphotodna.py faiss-build index.faiss meta.json dataset/*.jpg
-```
-
-Add more images over time:
-
-```bash
-python oaphotodna.py faiss-add index.faiss meta.json new_images/*.jpg
-```
-
-Run lookups:
-
-```bash
-python oaphotodna.py faiss-query index.faiss meta.json suspect.jpg 25 --min-similarity 0.97
-```
-
-## Limitations
-
-- The FAISS index currently uses exact L2 search (`IndexFlatL2` wrapped with ID mapping).
-- `meta.json` is a simple JSON sidecar, not a transactional database.
-- Duplicate prevention uses both canonicalized paths and hash-value content checks.
-- Very large collections may eventually benefit from approximate indexes such as IVF or HNSW.
-
-## Suggested future improvements
-
-Possible next steps for the script:
-
-- support recursive directory indexing
-- switch metadata storage from JSON to SQLite
-- add batch query mode
-- support approximate FAISS indexes for larger corpora
-
