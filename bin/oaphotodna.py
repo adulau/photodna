@@ -823,9 +823,9 @@ def build_parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--hash', dest='hash_image', type=existing_file, metavar='IMAGE', help='Compute the hash of one image')
     mode.add_argument('--compare', nargs=2, metavar=('IMAGE1', 'IMAGE2'), help='Compare two images')
-    mode.add_argument('--faiss-build', nargs='+', metavar=('INDEX', 'META', 'IMAGE'), help='Create a new FAISS index: INDEX META IMAGE [IMAGE ...]')
-    mode.add_argument('--faiss-add', nargs='+', metavar=('INDEX', 'META', 'IMAGE'), help='Append images to an existing FAISS index: INDEX META IMAGE [IMAGE ...]')
-    mode.add_argument('--faiss-query', nargs='+', metavar=('INDEX', 'META', 'QUERY_IMAGE', 'TOP_K'), help='Find closest indexed matches: INDEX META QUERY_IMAGE [TOP_K]')
+    mode.add_argument('--faiss-build', nargs='+', metavar='ARG', help='Create a new FAISS index: INDEX META IMAGE [IMAGE ...]')
+    mode.add_argument('--faiss-add', nargs='+', metavar='ARG', help='Append images to an existing FAISS index: INDEX META IMAGE [IMAGE ...]')
+    mode.add_argument('--faiss-query', nargs='+', metavar='ARG', help='Find closest indexed matches: INDEX META QUERY_IMAGE [TOP_K]')
 
     parser.add_argument('--metric', choices=['euclidean', 'manhattan'], default='euclidean', help='Distance metric for --compare')
     parser.add_argument('--min-similarity', type=similarity_value, default=None, help='With --faiss-query, filter results below this similarity threshold [0,1]')
