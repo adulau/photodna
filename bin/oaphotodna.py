@@ -858,6 +858,10 @@ def parse_faiss_query_values(values: List[str], parser: argparse.ArgumentParser)
 def main(argv: List[str]):
     parser = build_parser()
 
+    if len(argv) == 1:
+        parser.print_help()
+        return 0
+
     try:
         args = parser.parse_args(argv[1:])
 
