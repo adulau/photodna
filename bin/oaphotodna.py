@@ -3,11 +3,11 @@
 # ----- Import libraries, global settings -----
 
 from math import floor, sqrt
-import argparse
-import csv
-import itertools
+import json
 import math
-from pathlib import Path
+import os
+import sys
+from typing import Dict, List, Optional, Tuple
 from PIL import Image
 
 DEBUG_LOGGING = False
@@ -20,6 +20,13 @@ try:
     USE_NUMPY = True
 except ImportError:
     USE_NUMPY = False
+
+try:
+    import faiss  # type: ignore
+    USE_FAISS = True
+except ImportError:
+    faiss = None
+    USE_FAISS = False
 
 # ----- Helper -----
 
@@ -46,7 +53,6 @@ HASH_SCALE_CONST = float.fromhex('0x1.07b3705abb25cp0')
 # (e.g. "short" hashes have a totally different postprocessing step).
 # The only value used in practice is 6. Changing it may or may not work.
 GRID_SIZE_HYPERPARAMETER = 6
-
 
 # ----- (3.1) Preprocessing -----
 
@@ -80,7 +86,7 @@ def preprocess_pixel_sum(im):
             # `accum` is the sum of just this row
             accum += pxsum
             # Re-use already-computed data from previous row
-            last_row_sum = sum_out[(y-1) * im.width + x]
+            last_row_sum = sum_out[(y - 1) * im.width + x]
             sum_out.append(accum + last_row_sum)
 
     return sum_out
@@ -117,9 +123,9 @@ FEATURE_STEP_DIVISOR = GRID_SIZE_HYPERPARAMETER * 4 + 4
 # at a coordinate which is not an integer (and thus lies *between* pixels).
 def interpolate_px_quad(summed_im, im_w, x, y, x_residue, y_residue, debug_str=''):
     px_1 = summed_im[y * im_w + x]
-    px_2 = summed_im[(y+1) * im_w + x]
+    px_2 = summed_im[(y + 1) * im_w + x]
     px_3 = summed_im[y * im_w + x + 1]
-    px_4 = summed_im[(y+1) * im_w + x + 1]
+    px_4 = summed_im[(y + 1) * im_w + x + 1]
     # NOTE: Must multiply the interpolation factors first *and then* the pixel
     # (due to rounding behavior)
     px_avg = \
@@ -211,7 +217,6 @@ def box_sum_for_radius(
     return R_box
 
 
-
 def compute_feature_grid(summed_im, im_w, im_h):
     # Compute the grid step size, which is Delta_l and Delta_w in the paper.
     # The paper does not explain how to do this.
@@ -255,7 +260,6 @@ def compute_feature_grid(summed_im, im_w, im_h):
                 0.8, WEIGHT_R3)
 
             # Compute the final feature value. This is Equation 11.
-            # See NOTE about rounding within `box_sum_for_radius`
             feat_val = radius_box_0p2 + radius_box_0p4 + radius_box_0p8
             if DEBUG_LOGGING:
                 print(f"--> {feat_val}")
@@ -268,35 +272,25 @@ def compute_feature_grid(summed_im, im_w, im_h):
 
 def compute_gradient_grid(feature_grid):
     grad_out = [0.0] * (GRID_SIZE_HYPERPARAMETER * GRID_SIZE_HYPERPARAMETER * 4)
-    # The computation of the gradient grid iterates over the feature grid in 4x4 blocks
-    # (i.e. 6x6 blocks of 4x4 values in order to arrive at a total region of 24x24 values).
-    # This is the size of the "interior" region where there isn't missing data on the boundaries.
-    # NOTE: This *also* affects rounding behavior
     for feat_y_chunk in range(GRID_SIZE_HYPERPARAMETER):
         for feat_x_chunk in range(GRID_SIZE_HYPERPARAMETER):
             for feat_chunk_sub_y in range(4):
                 for feat_chunk_sub_x in range(4):
-                    # Rearrange this chunked iteration order to get the actual coordinates we need.
-                    # NOTE: In the paper, these are `uv` coordinates.
                     feat_x = 1 + feat_x_chunk * 4 + feat_chunk_sub_x
                     feat_y = 1 + feat_y_chunk * 4 + feat_chunk_sub_y
                     if DEBUG_LOGGING:
                         print(f"feat {feat_x} {feat_y}")
 
-                    # Compute the gradients. This is Equation 12.
-                    # NOTE: You can ignore the phrase "Sobel-like operator".
-                    # This here is the exact operator needed.
                     feat_L = feature_grid[feat_y * FEATURE_GRID_DIM + feat_x - 1]
                     feat_R = feature_grid[feat_y * FEATURE_GRID_DIM + feat_x + 1]
-                    feat_U = feature_grid[(feat_y-1) * FEATURE_GRID_DIM + feat_x]
-                    feat_D = feature_grid[(feat_y+1) * FEATURE_GRID_DIM + feat_x]
+                    feat_U = feature_grid[(feat_y - 1) * FEATURE_GRID_DIM + feat_x]
+                    feat_D = feature_grid[(feat_y + 1) * FEATURE_GRID_DIM + feat_x]
                     if DEBUG_LOGGING:
                         print(f"vals {feat_L} {feat_R} {feat_U} {feat_D}")
 
                     grad_d_horiz = feat_L - feat_R
                     grad_d_vert = feat_U - feat_D
 
-                    # Split the gradient into components. This is Equation 13.
                     if grad_d_horiz <= 0:
                         grad_d_h_pos = 0
                         grad_d_h_neg = -grad_d_horiz
@@ -311,10 +305,11 @@ def compute_gradient_grid(feature_grid):
                         grad_d_v_neg = 0
 
                     if DEBUG_LOGGING:
-                       print( f"grad values {binascii.hexlify(struct.pack('>d', grad_d_horiz))} " f"{binascii.hexlify(struct.pack('>d', grad_d_vert))}")
+                        print(
+                            f"grad values {binascii.hexlify(struct.pack('>d', grad_d_horiz))} "
+                            f"{binascii.hexlify(struct.pack('>d', grad_d_vert))}"
+                        )
 
-                    # Map the feature grid coordinates into gradient grid coordinates.
-                    # This is Equation 14. The value of chi is 2.5 and psi is 0.25.
                     grad_y_f = (feat_y - 2.5) * 0.25
                     grad_x_f = (feat_x - 2.5) * 0.25
                     grad_y = floor(grad_y_f)
@@ -324,12 +319,6 @@ def compute_gradient_grid(feature_grid):
                     if DEBUG_LOGGING:
                         print(f"grad pos {grad_x} {grad_y} | {grad_x_residue} {grad_y_residue}")
 
-                    # NOTE: Values involved in computing gradient grid coordinates are all binary fractions
-                    # (i.e. 1 / 2^n), so all computations here are exact with no rounding concerns.
-
-                    # Distribute the gradients into the grid. The paper does not specify how to do this.
-                    # This is performed by performing a bilinear interpolation, but "inverted".
-                    # Each set of 4 gradient values is spread into a 2x2 cluster in the gradient grid.
                     if grad_y >= 0:
                         if grad_x >= 0:
                             grad_out[(grad_y * GRID_SIZE_HYPERPARAMETER + grad_x) * 4 + 0] += \
@@ -341,32 +330,32 @@ def compute_gradient_grid(feature_grid):
                             grad_out[(grad_y * GRID_SIZE_HYPERPARAMETER + grad_x) * 4 + 3] += \
                                 (1 - grad_x_residue) * (1 - grad_y_residue) * grad_d_v_neg
                         if grad_x < 5:
-                            grad_out[(grad_y * GRID_SIZE_HYPERPARAMETER + grad_x+1) * 4 + 0] += \
+                            grad_out[(grad_y * GRID_SIZE_HYPERPARAMETER + grad_x + 1) * 4 + 0] += \
                                 grad_x_residue * (1 - grad_y_residue) * grad_d_h_pos
-                            grad_out[(grad_y * GRID_SIZE_HYPERPARAMETER + grad_x+1) * 4 + 1] += \
+                            grad_out[(grad_y * GRID_SIZE_HYPERPARAMETER + grad_x + 1) * 4 + 1] += \
                                 grad_x_residue * (1 - grad_y_residue) * grad_d_h_neg
-                            grad_out[(grad_y * GRID_SIZE_HYPERPARAMETER + grad_x+1) * 4 + 2] += \
+                            grad_out[(grad_y * GRID_SIZE_HYPERPARAMETER + grad_x + 1) * 4 + 2] += \
                                 grad_x_residue * (1 - grad_y_residue) * grad_d_v_pos
-                            grad_out[(grad_y * GRID_SIZE_HYPERPARAMETER + grad_x+1) * 4 + 3] += \
+                            grad_out[(grad_y * GRID_SIZE_HYPERPARAMETER + grad_x + 1) * 4 + 3] += \
                                 grad_x_residue * (1 - grad_y_residue) * grad_d_v_neg
                     if grad_y < 5:
                         if grad_x >= 0:
-                            grad_out[((grad_y+1) * GRID_SIZE_HYPERPARAMETER + grad_x) * 4 + 0] += \
+                            grad_out[((grad_y + 1) * GRID_SIZE_HYPERPARAMETER + grad_x) * 4 + 0] += \
                                 (1 - grad_x_residue) * grad_y_residue * grad_d_h_pos
-                            grad_out[((grad_y+1) * GRID_SIZE_HYPERPARAMETER + grad_x) * 4 + 1] += \
+                            grad_out[((grad_y + 1) * GRID_SIZE_HYPERPARAMETER + grad_x) * 4 + 1] += \
                                 (1 - grad_x_residue) * grad_y_residue * grad_d_h_neg
-                            grad_out[((grad_y+1) * GRID_SIZE_HYPERPARAMETER + grad_x) * 4 + 2] += \
+                            grad_out[((grad_y + 1) * GRID_SIZE_HYPERPARAMETER + grad_x) * 4 + 2] += \
                                 (1 - grad_x_residue) * grad_y_residue * grad_d_v_pos
-                            grad_out[((grad_y+1) * GRID_SIZE_HYPERPARAMETER + grad_x) * 4 + 3] += \
+                            grad_out[((grad_y + 1) * GRID_SIZE_HYPERPARAMETER + grad_x) * 4 + 3] += \
                                 (1 - grad_x_residue) * grad_y_residue * grad_d_v_neg
                         if grad_x < 5:
-                            grad_out[((grad_y+1) * GRID_SIZE_HYPERPARAMETER + grad_x+1) * 4 + 0] += \
+                            grad_out[((grad_y + 1) * GRID_SIZE_HYPERPARAMETER + grad_x + 1) * 4 + 0] += \
                                 grad_x_residue * grad_y_residue * grad_d_h_pos
-                            grad_out[((grad_y+1) * GRID_SIZE_HYPERPARAMETER + grad_x+1) * 4 + 1] += \
+                            grad_out[((grad_y + 1) * GRID_SIZE_HYPERPARAMETER + grad_x + 1) * 4 + 1] += \
                                 grad_x_residue * grad_y_residue * grad_d_h_neg
-                            grad_out[((grad_y+1) * GRID_SIZE_HYPERPARAMETER + grad_x+1) * 4 + 2] += \
+                            grad_out[((grad_y + 1) * GRID_SIZE_HYPERPARAMETER + grad_x + 1) * 4 + 2] += \
                                 grad_x_residue * grad_y_residue * grad_d_v_pos
-                            grad_out[((grad_y+1) * GRID_SIZE_HYPERPARAMETER + grad_x+1) * 4 + 3] += \
+                            grad_out[((grad_y + 1) * GRID_SIZE_HYPERPARAMETER + grad_x + 1) * 4 + 3] += \
                                 grad_x_residue * grad_y_residue * grad_d_v_neg
 
     return grad_out
@@ -374,30 +363,20 @@ def compute_gradient_grid(feature_grid):
 
 # ----- (3.4) Hash normalization -----
 
-# This is the hardcoded iteration limit during the iterative step
 HASH_ITER_LIMIT = 10
-
-# This is the kappa clipping constant used in Equation 16 and 17
 HASH_CLIP_CONST = 0.25
 
 
 def process_hash(gradient_grid, grid_step_h, grid_step_v):
-    # Initial image-size-dependent scaling factor
-    # NOTE: The 3 depends on the pixel format. This is 3 for RGB images.
     scale_factor = grid_step_h * HASH_SCALE_CONST * grid_step_v * 3
     for i in range(len(gradient_grid)):
-        # Each element is scaled down
         gradient_grid[i] /= scale_factor
 
-    # Repeat Equation 15 and 16 until finished
     iter_count = 0
     while iter_count < HASH_ITER_LIMIT:
         did_clip = False
         iter_count += 1
 
-        # Compute Equation 15.
-        # The norm has a very tiny epsilon in order to prevent division by zero.
-        # "L2 norm" means "the length of a vector" (in the standard school geometry sense).
         l2_norm = 1e-8
         for i in range(len(gradient_grid)):
             l2_norm += gradient_grid[i] * gradient_grid[i]
@@ -406,8 +385,6 @@ def process_hash(gradient_grid, grid_step_h, grid_step_v):
         if DEBUG_LOGGING:
             print(f"iter {iter_count}, norm {l2_norm}")
 
-        # Compute Equation 16. Check if anything is too big.
-        # If it is, clamp it and note down that we did so.
         for i in range(len(gradient_grid)):
             val_i = gradient_grid[i] / l2_norm
             gradient_grid[i] = val_i
@@ -418,7 +395,6 @@ def process_hash(gradient_grid, grid_step_h, grid_step_v):
                 gradient_grid[i] = HASH_CLIP_CONST
                 did_clip = True
 
-        # This finishes if nothing got clipped
         if not did_clip:
             break
     if DEBUG_LOGGING:
@@ -438,11 +414,55 @@ def hash_to_bytes(hash_in):
     return hash_out
 
 
-# ----- Comparison helpers -----
+# ----- Hash comparison helpers -----
 
-SUPPORTED_IMAGE_EXTENSIONS = {
-    '.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tif', '.tiff', '.webp'
-}
+def compute_hash(filename):
+    im = Image.open(filename)
+    if im.mode != 'RGB':
+        im = im.convert(mode='RGB')
+    if not USE_NUMPY:
+        summed_pixels = preprocess_pixel_sum(im)
+    else:
+        summed_pixels = preprocess_pixel_sum_np(im)
+    (feature_grid, grid_step_h, grid_step_v) = compute_feature_grid(summed_pixels, im.width, im.height)
+    gradient_grid = compute_gradient_grid(feature_grid)
+    hash_as_floats = process_hash(gradient_grid, grid_step_h, grid_step_v)
+    hash_as_bytes = hash_to_bytes(hash_as_floats)
+    return hash_as_bytes
+
+
+def hash_dimension() -> int:
+    return GRID_SIZE_HYPERPARAMETER * GRID_SIZE_HYPERPARAMETER * 4
+
+
+def max_euclidean_distance(dim: int) -> float:
+    return sqrt(dim * (255 ** 2))
+
+
+def squared_l2_to_euclidean(squared_l2: float) -> float:
+    return sqrt(max(0.0, squared_l2))
+
+
+def euclidean_to_similarity(distance: float, dim: int) -> float:
+    similarity = 1.0 - (distance / max_euclidean_distance(dim))
+    return clamp(similarity, 0.0, 1.0)
+
+
+def squared_l2_to_similarity(squared_l2: float, dim: int) -> float:
+    return euclidean_to_similarity(squared_l2_to_euclidean(squared_l2), dim)
+
+
+def similarity_to_max_squared_l2(similarity: float, dim: int) -> float:
+    similarity = clamp(similarity, 0.0, 1.0)
+    max_dist = max_euclidean_distance(dim)
+    max_allowed_dist = (1.0 - similarity) * max_dist
+    return max_allowed_dist * max_allowed_dist
+
+
+def hash_to_vector(hash_values):
+    if USE_NUMPY:
+        return np.asarray(hash_values, dtype=np.float32)
+    return [float(x) for x in hash_values]
 
 
 def compare_hashes(hash1, hash2, metric='euclidean'):
@@ -450,19 +470,16 @@ def compare_hashes(hash1, hash2, metric='euclidean'):
         raise ValueError('Hashes must have the same length')
 
     if metric == 'euclidean':
-        return math.sqrt(sum((a - b) ** 2 for a, b in zip(hash1, hash2)))
+        return sqrt(sum((a - b) ** 2 for a, b in zip(hash1, hash2)))
     if metric == 'manhattan':
         return sum(abs(a - b) for a, b in zip(hash1, hash2))
 
     raise ValueError(f'Unsupported metric: {metric}')
 
 
-
 def similarity_score(hash1, hash2):
-    dist = compare_hashes(hash1, hash2, metric='euclidean')
-    max_dist = math.sqrt(len(hash1) * (255 ** 2))
-    return 1.0 - (dist / max_dist)
-
+    distance = compare_hashes(hash1, hash2, metric='euclidean')
+    return euclidean_to_similarity(distance, len(hash1))
 
 
 def compare_images(file1, file2, metric='euclidean'):
@@ -470,8 +487,8 @@ def compare_images(file1, file2, metric='euclidean'):
     hash2 = compute_hash(file2)
     distance = compare_hashes(hash1, hash2, metric=metric)
     return {
-        'file1': str(file1),
-        'file2': str(file2),
+        'file1': file1,
+        'file2': file2,
         'metric': metric,
         'distance': distance,
         'similarity': similarity_score(hash1, hash2),
@@ -480,74 +497,209 @@ def compare_images(file1, file2, metric='euclidean'):
     }
 
 
+# ----- FAISS local DB helpers -----
 
-def iter_image_files(directory, recursive=False):
-    directory = Path(directory)
-    iterator = directory.rglob('*') if recursive else directory.glob('*')
-    for path in sorted(iterator):
-        if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS:
-            yield path
+def require_faiss():
+    if not USE_FAISS:
+        raise RuntimeError('FAISS is not installed. Install it with: pip install faiss-cpu')
 
 
+def default_meta(dim: int) -> Dict:
+    return {
+        'dimension': dim,
+        'metric': 'squared_l2',
+        'similarity_metric': 'normalized_euclidean',
+        'next_id': 1,
+        'items': []
+    }
 
-def compute_directory_hashes(directory, recursive=False):
-    directory = Path(directory)
-    files = list(iter_image_files(directory, recursive=recursive))
-    results = []
+
+def load_meta(meta_path: str, dim: int) -> Dict:
+    if not os.path.exists(meta_path):
+        return default_meta(dim)
+    with open(meta_path, 'r', encoding='utf-8') as f:
+        meta = json.load(f)
+    if meta.get('dimension') != dim:
+        raise ValueError(f"Metadata dimension mismatch: expected {dim}, got {meta.get('dimension')}")
+    return meta
+
+
+def save_meta(meta_path: str, meta: Dict):
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, indent=2, sort_keys=True)
+
+
+def create_faiss_index(dim: int):
+    require_faiss()
+    return faiss.IndexIDMap2(faiss.IndexFlatL2(dim))
+
+
+def load_faiss_index(index_path: str, dim: int):
+    require_faiss()
+    if not os.path.exists(index_path):
+        return create_faiss_index(dim)
+    index = faiss.read_index(index_path)
+    if index.d != dim:
+        raise ValueError(f"FAISS index dimension mismatch: expected {dim}, got {index.d}")
+    return index
+
+
+def save_faiss_index(index_path: str, index):
+    require_faiss()
+    faiss.write_index(index, index_path)
+
+
+def build_records_for_files(files: List[str], meta: Dict) -> Tuple[List[int], List[List[int]], List[Dict]]:
+    ids = []
+    hashes = []
+    items = []
+    next_id = meta['next_id']
+
+    existing_paths = {item['path'] for item in meta['items']}
     for path in files:
-        results.append({
+        if path in existing_paths:
+            continue
+        h = compute_hash(path)
+        item_id = next_id
+        next_id += 1
+        ids.append(item_id)
+        hashes.append(h)
+        items.append({
+            'id': item_id,
             'path': path,
-            'hash': compute_hash(path),
+            'hash': h,
+            'extra': {}
         })
-    return results
+
+    meta['next_id'] = next_id
+    return ids, hashes, items
 
 
+def add_files_to_faiss(index_path: str, meta_path: str, files: List[str]):
+    dim = hash_dimension()
+    meta = load_meta(meta_path, dim)
+    index = load_faiss_index(index_path, dim)
+    ids, hashes, items = build_records_for_files(files, meta)
 
-def compute_pairwise_distances(directory_hashes, metric='euclidean'):
-    pairs = []
-    for left, right in itertools.combinations(directory_hashes, 2):
-        distance = compare_hashes(left['hash'], right['hash'], metric=metric)
-        similarity = similarity_score(left['hash'], right['hash'])
-        pairs.append({
-            'file1': str(left['path']),
-            'file2': str(right['path']),
-            'metric': metric,
-            'distance': distance,
-            'similarity': similarity,
-        })
-    pairs.sort(key=lambda item: item['distance'])
-    return pairs
+    if not ids:
+        save_faiss_index(index_path, index)
+        save_meta(meta_path, meta)
+        return 0
 
-
-
-def write_pairwise_csv(rows, output_file):
-    with open(output_file, 'w', newline='', encoding='utf-8') as handle:
-        writer = csv.DictWriter(handle, fieldnames=['file1', 'file2', 'metric', 'distance', 'similarity'])
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-# ----- Put it all together -----
-
-
-def compute_hash(filename):
-    # Load image
-    im = Image.open(filename)
-    if im.mode != 'RGB':
-        im = im.convert(mode='RGB')
-    # Preprocess into summed array
-    if not USE_NUMPY:
-        summed_pixels = preprocess_pixel_sum(im)
+    if USE_NUMPY:
+        xb = np.asarray(hashes, dtype=np.float32)
+        xids = np.asarray(ids, dtype=np.int64)
     else:
-        summed_pixels = preprocess_pixel_sum_np(im)
-    (feature_grid, grid_step_h, grid_step_v) = \
-        compute_feature_grid(summed_pixels, im.width, im.height)
-    gradient_grid = compute_gradient_grid(feature_grid)
-    hash_as_floats = process_hash(gradient_grid, grid_step_h, grid_step_v)
-    hash_as_bytes = hash_to_bytes(hash_as_floats)
-    return hash_as_bytes
+        raise RuntimeError('NumPy is required for FAISS operations')
+
+    index.add_with_ids(xb, xids)
+    meta['items'].extend(items)
+    save_faiss_index(index_path, index)
+    save_meta(meta_path, meta)
+    return len(ids)
 
 
+def build_faiss_index(index_path: str, meta_path: str, files: List[str]):
+    dim = hash_dimension()
+    meta = default_meta(dim)
+    index = create_faiss_index(dim)
+    ids, hashes, items = build_records_for_files(files, meta)
+
+    if ids:
+        if not USE_NUMPY:
+            raise RuntimeError('NumPy is required for FAISS operations')
+        xb = np.asarray(hashes, dtype=np.float32)
+        xids = np.asarray(ids, dtype=np.int64)
+        index.add_with_ids(xb, xids)
+        meta['items'].extend(items)
+
+    save_faiss_index(index_path, index)
+    save_meta(meta_path, meta)
+    return len(ids)
+
+
+def query_faiss_index(index_path: str,
+                      meta_path: str,
+                      query_file: str,
+                      top_k: int = 10,
+                      min_similarity: Optional[float] = None,
+                      max_distance: Optional[float] = None):
+    dim = hash_dimension()
+    meta = load_meta(meta_path, dim)
+    index = load_faiss_index(index_path, dim)
+    if index.ntotal == 0:
+        return {
+            'query_file': query_file,
+            'query_hash': compute_hash(query_file),
+            'results': []
+        }
+
+    query_hash = compute_hash(query_file)
+    if not USE_NUMPY:
+        raise RuntimeError('NumPy is required for FAISS operations')
+
+    xq = np.asarray([query_hash], dtype=np.float32)
+    search_k = min(max(top_k, 1), int(index.ntotal))
+
+    # If filtering is requested, oversample so the filter still has a good chance
+    # of returning enough close matches.
+    if min_similarity is not None or max_distance is not None:
+        search_k = int(index.ntotal)
+
+    distances_sq, ids = index.search(xq, search_k)
+    item_by_id = {item['id']: item for item in meta['items']}
+
+    if min_similarity is not None:
+        min_similarity = clamp(float(min_similarity), 0.0, 1.0)
+    if max_distance is not None:
+        max_distance = max(0.0, float(max_distance))
+
+    results = []
+    for squared_l2, item_id in zip(distances_sq[0], ids[0]):
+        if item_id == -1:
+            continue
+        distance = squared_l2_to_euclidean(float(squared_l2))
+        similarity = squared_l2_to_similarity(float(squared_l2), dim)
+
+        if min_similarity is not None and similarity < min_similarity:
+            continue
+        if max_distance is not None and distance > max_distance:
+            continue
+
+        item = item_by_id.get(int(item_id))
+        if item is None:
+            continue
+        results.append({
+            'id': int(item_id),
+            'path': item['path'],
+            'distance': distance,
+            'distance_squared': float(squared_l2),
+            'similarity': similarity,
+            'hash': item['hash'],
+        })
+        if len(results) >= top_k:
+            break
+
+    return {
+        'query_file': query_file,
+        'query_hash': query_hash,
+        'results': results,
+    }
+
+
+def print_faiss_results(result):
+    print(f"Query: {result['query_file']}")
+    print(f"Matches: {len(result['results'])}")
+    for idx, match in enumerate(result['results'], start=1):
+        print(
+            f"[{idx}] {match['path']} | "
+            f"distance={match['distance']:.4f} | "
+            f"similarity={match['similarity']:.6f} | "
+            f"distance_squared={match['distance_squared']:.4f}"
+        )
+
+
+# ----- Legacy helpers -----
 
 def imgnet_test_inner(i):
     import base64
@@ -557,8 +709,8 @@ def imgnet_test_inner(i):
     return (filename, photo_hash)
 
 
-
 def imgnet_test():
+    import csv
     import multiprocessing
 
     reference_hashes = {}
@@ -586,88 +738,110 @@ def imgnet_test():
     p.join()
 
 
+# ----- CLI -----
 
-def build_arg_parser():
-    parser = argparse.ArgumentParser(
-        description='Compute PhotoDNA-style hashes and compare images.'
-    )
-    parser.add_argument(
-        '--metric',
-        choices=['euclidean', 'manhattan'],
-        default='euclidean',
-        help='Distance metric used for comparisons.'
-    )
-    parser.add_argument(
-        '--directory',
-        metavar='DIR',
-        help='Hash all supported images in DIR and compare every file against every other file.'
-    )
-    parser.add_argument(
-        '--recursive',
-        action='store_true',
-        help='Recurse into subdirectories when using --directory.'
-    )
-    parser.add_argument(
-        '--csv-output',
-        metavar='FILE',
-        help='Write pairwise comparison results to CSV when using --directory.'
-    )
-    parser.add_argument(
-        'paths',
-        nargs='*',
-        help='One image path to hash, or two image paths to compare.'
-    )
-    return parser
+def print_usage(argv0: str):
+    print('Usage:')
+    print(f"  {argv0} image.jpg")
+    print(f"  {argv0} image1.jpg image2.jpg")
+    print(f"  {argv0} --metric euclidean image1.jpg image2.jpg")
+    print(f"  {argv0} --metric manhattan image1.jpg image2.jpg")
+    print(f"  {argv0} --faiss-build index.faiss meta.json image1.jpg [image2.jpg ...]")
+    print(f"  {argv0} --faiss-add index.faiss meta.json image1.jpg [image2.jpg ...]")
+    print(f"  {argv0} --faiss-query index.faiss meta.json query.jpg [top_k]")
+    print(f"  {argv0} --faiss-query index.faiss meta.json query.jpg [top_k] --min-similarity 0.95")
+    print(f"  {argv0} --faiss-query index.faiss meta.json query.jpg [top_k] --max-distance 15")
 
 
+def parse_faiss_query_args(args: List[str]):
+    if len(args) < 4:
+        raise ValueError('Not enough arguments for --faiss-query')
 
-def main():
-    parser = build_arg_parser()
-    args = parser.parse_args()
+    index_path = args[1]
+    meta_path = args[2]
+    query_file = args[3]
 
-    if args.directory:
-        if args.paths:
-            parser.error('Do not pass image paths together with --directory.')
+    top_k = 10
+    min_similarity = None
+    max_distance = None
 
-        directory_hashes = compute_directory_hashes(args.directory, recursive=args.recursive)
-        if not directory_hashes:
-            parser.error('No supported image files found in the directory.')
+    i = 4
+    if i < len(args) and not args[i].startswith('--'):
+        top_k = int(args[i])
+        i += 1
 
-        print(f'Computed {len(directory_hashes)} hashes from {args.directory}')
-        for item in directory_hashes:
-            print(f'HASH {item["path"]}: {",".join(str(i) for i in item["hash"])}')
+    while i < len(args):
+        flag = args[i]
+        if flag == '--min-similarity':
+            i += 1
+            if i >= len(args):
+                raise ValueError('--min-similarity requires a value')
+            min_similarity = float(args[i])
+        elif flag == '--max-distance':
+            i += 1
+            if i >= len(args):
+                raise ValueError('--max-distance requires a value')
+            max_distance = float(args[i])
+        else:
+            raise ValueError(f'Unknown option: {flag}')
+        i += 1
 
-        pairwise_rows = compute_pairwise_distances(directory_hashes, metric=args.metric)
-        print(f'Computed {len(pairwise_rows)} pairwise comparisons using {args.metric}.')
-        for row in pairwise_rows:
-            print(
-                f'{row["file1"]} <-> {row["file2"]}: '
-                f'distance={row["distance"]:.4f}, similarity={row["similarity"]:.6f}'
-            )
+    return index_path, meta_path, query_file, top_k, min_similarity, max_distance
 
-        if args.csv_output:
-            write_pairwise_csv(pairwise_rows, args.csv_output)
-            print(f'Wrote CSV results to {args.csv_output}')
-        return
 
-    if len(args.paths) == 1:
-        photo_hash = compute_hash(args.paths[0])
-        print(','.join(str(i) for i in photo_hash))
-        return
+def main(argv: List[str]):
+    if len(argv) == 2:
+        photo_hash = compute_hash(argv[1])
+        hash_string = ','.join(str(i) for i in photo_hash)
+        print(hash_string)
+        return 0
 
-    if len(args.paths) == 2:
-        result = compare_images(args.paths[0], args.paths[1], metric=args.metric)
-        print(f'Distance ({result["metric"]}): {result["distance"]:.4f}')
-        print(f'Similarity: {result["similarity"]:.6f}')
-        return
+    if len(argv) == 3:
+        result = compare_images(argv[1], argv[2])
+        print(f"Distance ({result['metric']}): {result['distance']:.4f}")
+        print(f"Similarity: {result['similarity']:.6f}")
+        return 0
 
-    parser.print_usage()
-    parser.exit(1, 'Provide one image, two images, or use --directory DIR.\n')
+    if len(argv) == 4 and argv[1] == '--metric':
+        print(f"Usage: {argv[0]} [--metric euclidean|manhattan] image1 image2")
+        return -1
+
+    if len(argv) == 5 and argv[1] == '--metric':
+        metric = argv[2]
+        result = compare_images(argv[3], argv[4], metric=metric)
+        print(f"Distance ({result['metric']}): {result['distance']:.4f}")
+        print(f"Similarity: {result['similarity']:.6f}")
+        return 0
+
+    if len(argv) >= 5 and argv[1] == '--faiss-build':
+        added = build_faiss_index(argv[2], argv[3], argv[4:])
+        print(f"Indexed {added} file(s) into {argv[2]}")
+        return 0
+
+    if len(argv) >= 5 and argv[1] == '--faiss-add':
+        added = add_files_to_faiss(argv[2], argv[3], argv[4:])
+        print(f"Added {added} file(s) into {argv[2]}")
+        return 0
+
+    if len(argv) >= 5 and argv[1] == '--faiss-query':
+        index_path, meta_path, query_file, top_k, min_similarity, max_distance = parse_faiss_query_args(argv[1:])
+        result = query_faiss_index(
+            index_path=index_path,
+            meta_path=meta_path,
+            query_file=query_file,
+            top_k=top_k,
+            min_similarity=min_similarity,
+            max_distance=max_distance,
+        )
+        print_faiss_results(result)
+        return 0
+
+    print_usage(argv[0])
+    return -1
 
 
 if __name__ == '__main__':
-    main()
-
+    sys.exit(main(sys.argv))
 
 # if __name__ == '__main__':
 #     imgnet_test()
