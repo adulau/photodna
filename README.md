@@ -43,6 +43,32 @@ python bin/oaphotodna.py --help
 
 The CLI uses traditional, flag-prefixed arguments (for example `--hash`, `--compare`, `--faiss-query`) rather than positional subcommands.
 
+```bash
+adulau@blakley:~/git/photodna/bin$ python3 oaphotodna.py
+usage: oaphotodna.py [-h] (--hash IMAGE | --compare IMAGE1 IMAGE2 | --faiss-build ARG [ARG ...] | --faiss-add ARG [ARG ...] | --faiss-query ARG [ARG ...]) [--metric {euclidean,manhattan}]
+                     [--min-similarity MIN_SIMILARITY] [--max-distance MAX_DISTANCE]
+
+Compute and compare PhotoDNA-like hashes, with optional FAISS local indexing.
+
+options:
+  -h, --help            show this help message and exit
+  --hash IMAGE          Compute the hash of one image
+  --compare IMAGE1 IMAGE2
+                        Compare two images
+  --faiss-build ARG [ARG ...]
+                        Create a new FAISS index: INDEX META IMAGE [IMAGE ...]
+  --faiss-add ARG [ARG ...]
+                        Append images to an existing FAISS index: INDEX META IMAGE [IMAGE ...]
+  --faiss-query ARG [ARG ...]
+                        Find closest indexed matches: INDEX META QUERY_IMAGE [TOP_K]
+  --metric {euclidean,manhattan}
+                        Distance metric for --compare
+  --min-similarity MIN_SIMILARITY
+                        With --faiss-query, filter results below this similarity threshold [0,1]
+  --max-distance MAX_DISTANCE
+                        With --faiss-query, filter results above this Euclidean distance
+```
+
 ## Basic usage
 
 ### 1) Hash a single image
