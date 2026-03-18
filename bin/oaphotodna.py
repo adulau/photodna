@@ -785,6 +785,16 @@ def existing_file(path: str) -> str:
     return path
 
 
+def existing_directory(path: str) -> str:
+    if path.startswith('-'):
+        raise argparse.ArgumentTypeError(f"expected a directory path, got option-like value: {path}")
+    if not os.path.exists(path):
+        raise argparse.ArgumentTypeError(f"directory not found: {path}")
+    if not os.path.isdir(path):
+        raise argparse.ArgumentTypeError(f"not a directory: {path}")
+    return path
+
+
 def non_negative_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -815,6 +825,19 @@ def non_negative_float(value: str) -> float:
     return parsed
 
 
+def compute_hashes_for_directory(directory: str) -> List[Dict[str, object]]:
+    entries = []
+    for entry in sorted(os.scandir(directory), key=lambda item: item.name):
+        if not entry.is_file():
+            continue
+        entries.append({
+            'filename': entry.name,
+            'path': os.path.abspath(entry.path),
+            'photodna': compute_hash(entry.path),
+        })
+    return entries
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = FriendlyArgumentParser(
         description='Compute and compare PhotoDNA-like hashes, with optional FAISS local indexing.'
@@ -822,6 +845,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--hash', dest='hash_image', type=existing_file, metavar='IMAGE', help='Compute the hash of one image')
+    mode.add_argument('--hash-dir', dest='hash_directory', type=existing_directory, metavar='DIRECTORY', help='Compute hashes for every file in a directory and output JSON')
     mode.add_argument('--compare', nargs=2, metavar=('IMAGE1', 'IMAGE2'), help='Compare two images')
     mode.add_argument('--faiss-build', nargs='+', metavar='ARG', help='Create a new FAISS index: INDEX META IMAGE [IMAGE ...]')
     mode.add_argument('--faiss-add', nargs='+', metavar='ARG', help='Append images to an existing FAISS index: INDEX META IMAGE [IMAGE ...]')
@@ -868,6 +892,11 @@ def main(argv: List[str]):
         if args.hash_image is not None:
             photo_hash = compute_hash(args.hash_image)
             print(','.join(str(i) for i in photo_hash))
+            return 0
+
+        if args.hash_directory is not None:
+            results = compute_hashes_for_directory(args.hash_directory)
+            print(json.dumps(results, indent=2))
             return 0
 
         if args.compare is not None:

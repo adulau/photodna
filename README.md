@@ -25,11 +25,12 @@ pip install pillow numpy faiss-cpu
 
 ## What the script does
 
-The script supports three main workflows:
+The script supports four main workflows:
 
 1. Compute the hash of a single image.
-2. Compare two images using either Euclidean or Manhattan distance.
-3. Build and query a local FAISS index of previously hashed images.
+2. Compute hashes for every file in a directory and emit JSON.
+3. Compare two images using either Euclidean or Manhattan distance.
+4. Build and query a local FAISS index of previously hashed images.
 
 The PhotoDNA-like hash is represented internally as a flat vector of 144 values. FAISS stores these vectors and searches for nearest neighbors using L2 distance.
 
@@ -45,7 +46,7 @@ The CLI uses traditional, flag-prefixed arguments (for example `--hash`, `--comp
 
 ```bash
 adulau@blakley:~/git/photodna/bin$ python3 oaphotodna.py
-usage: oaphotodna.py [-h] (--hash IMAGE | --compare IMAGE1 IMAGE2 | --faiss-build ARG [ARG ...] | --faiss-add ARG [ARG ...] | --faiss-query ARG [ARG ...]) [--metric {euclidean,manhattan}]
+usage: oaphotodna.py [-h] (--hash IMAGE | --hash-dir DIRECTORY | --compare IMAGE1 IMAGE2 | --faiss-build ARG [ARG ...] | --faiss-add ARG [ARG ...] | --faiss-query ARG [ARG ...]) [--metric {euclidean,manhattan}]
                      [--min-similarity MIN_SIMILARITY] [--max-distance MAX_DISTANCE]
 
 Compute and compare PhotoDNA-like hashes, with optional FAISS local indexing.
@@ -53,6 +54,7 @@ Compute and compare PhotoDNA-like hashes, with optional FAISS local indexing.
 options:
   -h, --help            show this help message and exit
   --hash IMAGE          Compute the hash of one image
+  --hash-dir DIRECTORY  Compute hashes for every file in a directory and output JSON
   --compare IMAGE1 IMAGE2
                         Compare two images
   --faiss-build ARG [ARG ...]
@@ -83,7 +85,27 @@ Output:
 73,71,74,32,...
 ```
 
-### 2) Compare two images
+### 2) Hash every file in a directory as JSON
+
+```bash
+python bin/oaphotodna.py --hash-dir tests/monochrome
+```
+
+Example output:
+
+```json
+[
+  {
+    "filename": "55147310088_42a69416d3_5k.jpg",
+    "path": "/full/path/to/tests/monochrome/55147310088_42a69416d3_5k.jpg",
+    "photodna": [73, 71, 74, 32]
+  }
+]
+```
+
+Each JSON object includes the base filename, the absolute file path, and the 144-byte PhotoDNA-like vector. Files are processed in sorted filename order, and non-file directory entries are skipped.
+
+### 3) Compare two images
 
 Default metric is Euclidean:
 
